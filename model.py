@@ -1,5 +1,5 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Tuple, List
 import numpy as np
 import pandas as pd
@@ -165,6 +165,108 @@ def simulate_many(types: Dict[str, TypeParams], N: int, seed: int,
         all_sum.append(df_s)
         all_micro.append(df_m)
     return pd.concat(all_sum, ignore_index=True), pd.concat(all_micro, ignore_index=True)
+
+# --- helper to update a single TypeParams field ---
+def _update_param(tp: TypeParams, name: str, value: float) -> TypeParams:
+    if name not in tp.__dict__:
+        raise ValueError(f"Unknown parameter: {name}")
+    return replace(tp, **{name: float(value)})
+
+# --- 2D tipping-point sweep ---
+def sweep_2d(tp: TypeParams, rp: RebelParams, gp: GovLossParams,
+             x_name: str, x_min: float, x_max: float, nx: int,
+             y_name: str, y_min: float, y_max: float, ny: int,
+             q0: float, s0: float):
+    """
+    Return dict with grids over (x,y):
+      - D0: attack gap at r=y=0 (attack iff D0>=0)
+      - feasible: 1 if domestic policy is feasible (A_r>0 or A_y>0); else 0
+      - Cstar: minimal deterrence cost (where D0>0 & feasible)
+      - L: gov expected loss if attacked
+      - class_no_policy: 0=no attack, 1=attack
+      - class_with_policy: 0=no-attack baseline, 1=attack persists, 2=policy deters
+      - mix_share_y: y*/(r*+y*) where policy deters; NaN otherwise
+    """
+    xs = np.linspace(x_min, x_max, nx)
+    ys = np.linspace(y_min, y_max, ny)
+    X, Y = np.meshgrid(xs, ys)
+
+    D0 = np.zeros_like(X, dtype=float)
+    Cstar = np.full_like(X, np.nan, dtype=float)
+    Lgrid = np.zeros_like(X, dtype=float)
+    feas = np.zeros_like(X, dtype=int)
+    class_np = np.zeros_like(X, dtype=int)
+    class_wp = np.zeros_like(X, dtype=int)
+    mix_share_y = np.full_like(X, np.nan, dtype=float)
+
+    for i in range(ny):
+        for j in range(nx):
+            tp_xy = tp
+            q0_xy = q0
+            s0_xy = s0
+
+            # x-axis
+            if x_name in tp.__dict__:
+                tp_xy = _update_param(tp_xy, x_name, X[i, j])
+            elif x_name == "q0":
+                q0_xy = X[i, j]
+            elif x_name == "s0":
+                s0_xy = X[i, j]
+            else:
+                raise ValueError(f"Unknown x parameter: {x_name}")
+
+            # y-axis
+            if y_name in tp.__dict__:
+                tp_xy = _update_param(tp_xy, y_name, Y[i, j])
+            elif y_name == "q0":
+                q0_xy = Y[i, j]
+            elif y_name == "s0":
+                s0_xy = Y[i, j]
+            else:
+                raise ValueError(f"Unknown y parameter: {y_name}")
+
+            D0_ij, _, _, _ = deterrence_gap_D0(tp_xy, q0_xy, s0_xy, rp)
+            A_r, A_y = A_coeffs(tp_xy, rp)
+            feasible = (A_r > 1e-12) or (A_y > 1e-12)
+            L = tp_xy.pi * gp.L_I + (1.0 - tp_xy.pi) * gp.L_U
+
+            D0[i, j] = D0_ij
+            Lgrid[i, j] = L
+            feas[i, j] = 1 if feasible else 0
+
+            # No-policy classification
+            class_np[i, j] = 1 if D0_ij >= 0 else 0
+
+            # With optimal policy classification
+            if D0_ij <= 0:
+                class_wp[i, j] = 0  # deterred even with r=y=0
+            else:
+                if not feasible:
+                    class_wp[i, j] = 1  # attack persists (can't deter)
+                else:
+                    a = (A_r**2 / tp_xy.c_r) if (A_r > 1e-12) else 0.0
+                    b = (A_y**2 / tp_xy.c_y) if (A_y > 1e-12) else 0.0
+                    denom = a + b
+                    if denom <= 1e-12:
+                        class_wp[i, j] = 1
+                    else:
+                        lam = D0_ij / denom
+                        r_star = lam * A_r / tp_xy.c_r if (A_r > 1e-12) else 0.0
+                        y_star = lam * A_y / tp_xy.c_y if (A_y > 1e-12) else 0.0
+                        C = 0.5 * (tp_xy.c_r * r_star * r_star + tp_xy.c_y * y_star * y_star)
+                        Cstar[i, j] = C
+                        if C <= L:
+                            class_wp[i, j] = 2  # government deters
+                            tot = r_star + y_star
+                            mix_share_y[i, j] = (y_star / tot) if tot > 1e-12 else np.nan
+                        else:
+                            class_wp[i, j] = 1  # attack persists
+
+    return {
+        "X": X, "Y": Y, "D0": D0, "Cstar": Cstar, "L": Lgrid,
+        "feasible": feas, "class_no_policy": class_np,
+        "class_with_policy": class_wp, "mix_share_y": mix_share_y
+    }
 
 # ---------- Presets ----------
 
