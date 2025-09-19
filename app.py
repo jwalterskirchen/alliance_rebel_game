@@ -198,7 +198,7 @@ with tab_tip:
             st.session_state["tip_s0_base"] = p["s0"]
             st.session_state["tip_nx"] = p["nx"]
             st.session_state["tip_ny"] = p["ny"]
-            st.experimental_rerun()
+            st.rerun()
     with colp2:
         st.write("")  # spacer
     with colp3:
