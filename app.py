@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from model import (
     RebelParams, GovLossParams, TypeParams,
-    simulate_many, default_presets
+    simulate_many, default_presets, sweep_2d
 )
 
 st.set_page_config(page_title="Alliance–Rebel Deterrence Simulator", layout="wide")
@@ -85,80 +85,215 @@ custom_type = TypeParams(
 
 # Build dictionary of selected types (use custom values if name collides)
 selected_types = {name: presets[name] for name in chosen if name in presets}
-if cname in chosen:
-    selected_types[cname] = custom_type
-
-# If nothing selected, default to Custom
-if not selected_types:
-    chosen = [cname]
+if cname in chosen or not selected_types:
     selected_types[cname] = custom_type
 
 st.markdown("---")
 
-# -------------------- Run simulation --------------------
-run = st.button("Run simulation")
+# -------------------- Tabs: Simulation vs Tipping Points --------------------
+tab_sim, tab_tip = st.tabs(["Simulation", "Tipping points (2D sweeps)"])
 
-if run:
-    with st.spinner("Simulating..."):
-        df_summary, df_micro = simulate_many(
-            selected_types, N=N, seed=int(seed),
-            rp=rp, gp=gp, q0_min=q0_min, q0_max=q0_max, s0_min=s0_min, s0_max=s0_max
-        )
+with tab_sim:
+    run = st.button("Run simulation")
+    if run:
+        with st.spinner("Simulating..."):
+            df_summary, df_micro = simulate_many(
+                selected_types, N=N, seed=int(seed),
+                rp=rp, gp=gp, q0_min=q0_min, q0_max=q0_max, s0_min=s0_min, s0_max=s0_max
+            )
 
-    st.success("Done.")
-    st.subheader("Summary")
-    st.dataframe(df_summary, use_container_width=True)
+        st.success("Done.")
+        st.subheader("Summary")
+        st.dataframe(df_summary, use_container_width=True)
 
-    # ------------- Charts (matplotlib only, one per figure, no explicit colors) -------------
-    # Chart 1: Attack rates
-    fig1 = plt.figure()
-    x = np.arange(len(df_summary))
-    width = 0.35
-    plt.bar(x - width/2, df_summary["attack_rate_no_policy"], width, label="No policy")
-    plt.bar(x + width/2, df_summary["attack_rate_with_policy"], width, label="With optimal policy")
-    plt.xticks(x, df_summary["type"], rotation=0)
-    plt.ylabel("Attack rate")
-    plt.title("Rebel attack rate by alliance type")
-    plt.legend()
-    plt.tight_layout()
-    st.pyplot(fig1)
+        # ------------- Charts (matplotlib only, one per figure, no explicit colors) -------------
+        # Chart 1: Attack rates
+        fig1 = plt.figure()
+        x = np.arange(len(df_summary))
+        width = 0.35
+        plt.bar(x - width/2, df_summary["attack_rate_no_policy"], width, label="No policy")
+        plt.bar(x + width/2, df_summary["attack_rate_with_policy"], width, label="With optimal policy")
+        plt.xticks(x, df_summary["type"], rotation=0)
+        plt.ylabel("Attack rate")
+        plt.title("Rebel attack rate by alliance type")
+        plt.legend()
+        plt.tight_layout()
+        st.pyplot(fig1)
 
-    # Chart 2: Policy levels among deterrers
-    fig2 = plt.figure()
-    width2 = 0.35
-    plt.bar(x - width2/2, df_summary["avg_r_if_policy_applied"], width2, label="Repression r* (among deterrers)")
-    plt.bar(x + width2/2, df_summary["avg_y_if_policy_applied"], width2, label="Concessions y* (among deterrers)")
-    plt.xticks(x, df_summary["type"], rotation=0)
-    plt.ylabel("Average policy level")
-    plt.title("Domestic policy used to deter (if any)")
-    plt.legend()
-    plt.tight_layout()
-    st.pyplot(fig2)
+        # Chart 2: Policy levels among deterrers
+        fig2 = plt.figure()
+        width2 = 0.35
+        plt.bar(x - width2/2, df_summary["avg_r_if_policy_applied"], width2, label="Repression r* (among deterrers)")
+        plt.bar(x + width2/2, df_summary["avg_y_if_policy_applied"], width2, label="Concessions y* (among deterrers)")
+        plt.xticks(x, df_summary["type"], rotation=0)
+        plt.ylabel("Average policy level")
+        plt.title("Domestic policy used to deter (if any)")
+        plt.legend()
+        plt.tight_layout()
+        st.pyplot(fig2)
+    else:
+        st.info("Choose types, adjust sliders, then click **Run simulation**.")
 
-    # Downloads
-    st.subheader("Download results")
-    csv_sum = df_summary.to_csv(index=False).encode("utf-8")
-    st.download_button("Download summary CSV", data=csv_sum, file_name="summary_by_type.csv", mime="text/csv")
+with tab_tip:
+    st.markdown("### Tipping-points explorer")
+    st.caption("Visualize attack/no-attack boundaries and the government’s policy-deterrence boundary in 2D parameter space.")
 
-    # micro can be large, so gate it
-    if st.checkbox("Include micro-level panel (can be large)"):
-        csv_micro = df_micro.to_csv(index=False).encode("utf-8")
-        st.download_button("Download micro CSV", data=csv_micro, file_name="micro_panel.csv", mime="text/csv")
+    # Choose a single type to analyze
+    type_to_analyze = st.selectbox("Type to analyze", list(selected_types.keys()))
+    tp = selected_types[type_to_analyze]
 
-else:
-    st.info("Choose types, adjust sliders, then click **Run simulation**.")
+    # ---- Presets ----
+    st.markdown("#### One-click bifurcation presets")
+    PRESETS = {
+        "Credibility vs Effectiveness (π–d)": dict(
+            x_name="pi", x_range=(0.0, 1.0), y_name="d", y_range=(0.0, 0.6),
+            q0=0.40, s0=0.10, nx=120, ny=120
+        ),
+        "Conditionality vs Repression cost (Δs–c_r)": dict(
+            x_name="delta_s", x_range=(-0.10, 0.20), y_name="c_r", y_range=(0.10, 2.00),
+            q0=0.40, s0=0.10, nx=120, ny=120
+        ),
+        "Repression efficiency vs grievance (φ_r–ψ_r)": dict(
+            x_name="phi_r", x_range=(0.0, 0.5), y_name="psi_r", y_range=(0.0, 0.5),
+            q0=0.40, s0=0.10, nx=120, ny=120
+        ),
+        "Concessions capacity vs benefit (φ_y–ψ_y)": dict(
+            x_name="phi_y", x_range=(-0.30, 0.30), y_name="psi_y", y_range=(0.0, 0.5),
+            q0=0.40, s0=0.10, nx=120, ny=120
+        ),
+        "Baseline rebel strength vs credibility (q0–π)": dict(
+            x_name="q0", x_range=(0.10, 0.80), y_name="pi", y_range=(0.0, 1.0),
+            q0=0.40, s0=0.10, nx=120, ny=120
+        ),
+        "Status-quo vs conditionality (s0–Δs)": dict(
+            x_name="s0", x_range=(0.00, 0.30), y_name="delta_s", y_range=(-0.10, 0.20),
+            q0=0.40, s0=0.10, nx=120, ny=120
+        ),
+    }
 
-st.markdown("---")
-with st.expander("Model notes"):
-    st.markdown(r"""
-**Rebel attack condition.** Rebels attack iff
-\(
-D(r,y;t) \equiv \big(q_U^0(t)-\pi(t)d(t)\big) - \frac{s^0(t)-\ell_R+k_R}{\Delta_R}
-- (\phi_r-\psi_r/\Delta_R)r - (\phi_y+\psi_y/\Delta_R)y \ge 0.
-\)
+    preset_name = st.selectbox("Preset", list(PRESETS.keys()), index=0, key="preset_choice")
 
-If \(D_0 = D(0,0;t)>0\), the lowest-cost deterring policy solves
-\(\min \tfrac12(c_r r^2 + c_y y^2)\) s.t. \(A_r r + A_y y \ge D_0\),
-with \(A_r=\phi_r-\psi_r/\Delta_R\), \(A_y=\phi_y+\psi_y/\Delta_R\).
-Optimal \((r^*,y^*)\) scales with these \(A\)'s and the policy cost parameters.
+    # Initialize session_state keys if missing
+    for key, default in [
+        ("tip_x_name", "pi"),
+        ("tip_y_name", "d"),
+        ("tip_x_range", (0.0, 1.0)),
+        ("tip_y_range", (0.0, 0.6)),
+        ("tip_q0_base", 0.40),
+        ("tip_s0_base", 0.10),
+        ("tip_nx", 100),
+        ("tip_ny", 100),
+    ]:
+        st.session_state.setdefault(key, default)
+
+    colp1, colp2, colp3 = st.columns([1,1,1])
+    with colp1:
+        if st.button("Apply preset"):
+            p = PRESETS[st.session_state["preset_choice"]]
+            st.session_state["tip_x_name"] = p["x_name"]
+            st.session_state["tip_y_name"] = p["y_name"]
+            st.session_state["tip_x_range"] = p["x_range"]
+            st.session_state["tip_y_range"] = p["y_range"]
+            st.session_state["tip_q0_base"] = p["q0"]
+            st.session_state["tip_s0_base"] = p["s0"]
+            st.session_state["tip_nx"] = p["nx"]
+            st.session_state["tip_ny"] = p["ny"]
+            st.experimental_rerun()
+    with colp2:
+        st.write("")  # spacer
+    with colp3:
+        st.write("")
+
+    # ---- Manual controls bound to session_state ----
+    st.markdown("#### Manual controls (editable)")
+    param_options = ["pi","d","delta_qU","delta_s","phi_r","phi_y","psi_r","psi_y","c_r","c_y","q0","s0"]
+    colx, coly = st.columns(2)
+    with colx:
+        x_name = st.selectbox("X-axis parameter", param_options, index=param_options.index(st.session_state["tip_x_name"]), key="tip_x_name")
+        x_min, x_max = st.slider("X range", -0.5, 1.5, st.session_state["tip_x_range"], 0.01, key="tip_x_range")
+    with coly:
+        y_name = st.selectbox("Y-axis parameter", param_options, index=param_options.index(st.session_state["tip_y_name"]), key="tip_y_name")
+        y_min, y_max = st.slider("Y range", -0.5, 1.5, st.session_state["tip_y_range"], 0.01, key="tip_y_range")
+
+    q0_base = st.slider("Baseline q0 (center)", 0.0, 1.0, st.session_state["tip_q0_base"], 0.01, key="tip_q0_base")
+    s0_base = st.slider("Baseline s0 (center)", 0.0, 0.5, st.session_state["tip_s0_base"], 0.01, key="tip_s0_base")
+
+    nx = st.slider("Grid steps (X)", 20, 200, st.session_state["tip_nx"], 10, key="tip_nx")
+    ny = st.slider("Grid steps (Y)", 20, 200, st.session_state["tip_ny"], 10, key="tip_ny")
+
+    overlay = st.checkbox("Overlay contours for D0=0 and C*=L", value=True)
+
+    run_sweep = st.button("Run 2D sweep")
+
+    if run_sweep:
+        with st.spinner("Sweeping..."):
+            out = sweep_2d(
+                tp, rp, gp,
+                st.session_state["tip_x_name"], st.session_state["tip_x_range"][0], st.session_state["tip_x_range"][1], int(st.session_state["tip_nx"]),
+                st.session_state["tip_y_name"], st.session_state["tip_y_range"][0], st.session_state["tip_y_range"][1], int(st.session_state["tip_ny"]),
+                st.session_state["tip_q0_base"], st.session_state["tip_s0_base"]
+            )
+
+        X, Y = out["X"], out["Y"]
+        D0 = out["D0"]
+        Cstar = out["Cstar"]
+        L = out["L"]
+        class_np = out["class_no_policy"]
+        class_wp = out["class_with_policy"]
+        mix_share_y = out["mix_share_y"]
+
+        # --- Figure 1: No policy (attack vs no attack) ---
+        fig_np = plt.figure()
+        plt.imshow(class_np, origin="lower", extent=[X.min(), X.max(), Y.min(), Y.max()], aspect="auto")
+        plt.xlabel(st.session_state["tip_x_name"])
+        plt.ylabel(st.session_state["tip_y_name"])
+        plt.title("No policy: 0 = no attack, 1 = attack")
+        if overlay:
+            try:
+                CS = plt.contour(X, Y, D0, levels=[0.0])
+                plt.clabel(CS, inline=True, fontsize=8)
+            except Exception:
+                pass
+        plt.tight_layout()
+        st.pyplot(fig_np)
+
+        # --- Figure 2: With optimal policy (three regimes) ---
+        fig_wp = plt.figure()
+        plt.imshow(class_wp, origin="lower", extent=[X.min(), X.max(), Y.min(), Y.max()], aspect="auto")
+        plt.xlabel(st.session_state["tip_x_name"])
+        plt.ylabel(st.session_state["tip_y_name"])
+        plt.title("With optimal policy: 0=no attack baseline, 1=attack persists, 2=policy deters")
+        if overlay:
+            try:
+                CS1 = plt.contour(X, Y, D0, levels=[0.0])
+                plt.clabel(CS1, inline=True, fontsize=8)
+            except Exception:
+                pass
+            try:
+                diff = Cstar - L
+                CS2 = plt.contour(X, Y, diff, levels=[0.0])
+                plt.clabel(CS2, inline=True, fontsize=8)
+            except Exception:
+                pass
+        plt.tight_layout()
+        st.pyplot(fig_wp)
+
+        # --- Figure 3: Policy mix among deterrers (share y*) ---
+        fig_mix = plt.figure()
+        plt.imshow(mix_share_y, origin="lower", extent=[X.min(), X.max(), Y.min(), Y.max()], aspect="auto")
+        plt.xlabel(st.session_state["tip_x_name"])
+        plt.ylabel(st.session_state["tip_y_name"])
+        plt.title("Policy mix when policy deters: y* / (r* + y*)")
+        plt.tight_layout()
+        st.pyplot(fig_mix)
+
+        # Quick legend
+        st.markdown("""
+**Legend**  
+- **Figure 1:** Dark/light regions split at the **D0=0** contour: crossing it is the *tipping point* for attack without domestic policy.  
+- **Figure 2:** The additional **C\* = L** contour is the *tipping point* for whether the government finds it optimal to deter.  
+  Regions: 0 (no attack even at r=y=0), 1 (attack persists; too costly or infeasible to deter), 2 (gov deters with optimal policy).  
+- **Figure 3:** Where region=2, color shows the share of **concessions** in the optimal mix; closer to 1 means concessions dominate.
 """)
+    else:
+        st.info("Pick a preset (optional), review the controls, then click **Run 2D sweep**.")
